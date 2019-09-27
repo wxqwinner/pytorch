@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 from . import invoke_rpc_builtin, invoke_rpc_python_udf, invoke_remote_builtin
-from . import init_rref_context
 from . import ProcessGroupAgent
 from . import WorkerId
 from .internal_rpc_utils import serialize, PythonUDF
 from .rpc_backend_registry import is_rpc_backend_registered, init_rpc_backend
+from . import init_rref_context
 
 import sys
 import torch
@@ -79,6 +79,7 @@ def _init_rpc(backend=RpcBackend.PROCESS_GROUP,
     elif is_rpc_backend_registered(backend):
         _agent = init_rpc_backend(
             backend,
+            self_rank=self_rank,
             self_name=self_name,
             init_method=init_method,
         )
