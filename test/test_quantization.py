@@ -34,11 +34,14 @@ import copy
                      " Quantized operations require FBGEMM. FBGEMM is only optimized for CPUs"
                      " with instruction set support avx2 or newer.")
 class PostTrainingQuantTest(QuantizationTestCase):
-    def test_single_layer(self):
+    @no_deadline
+    @given(qconfig=st.sampled_from((torch.quantization.default_qconfig, torch.quantization.default_per_channel_qconfig)))
+    def test_single_layer(self, qconfig):
         r"""Quantize SingleLayerLinearModel which has one Linear module, make sure it is swapped
         to nnq.Linear which is the quantized version of the module
         """
         model = SingleLayerLinearModel()
+        model.qconfig = qconfig
         model = prepare(model)
         # Check if observers and quant/dequant nodes are inserted
         self.checkNoPrepModules(model)
@@ -59,6 +62,7 @@ class PostTrainingQuantTest(QuantizationTestCase):
 
         # test one line API - out of place version
         base = SingleLayerLinearModel()
+        base.qconfig = qconfig
         keys_before = set(list(base.state_dict().keys()))
         model = quantize(base, test_only_eval_fn, self.calib_data)
         checkQuantized(model)
@@ -67,6 +71,7 @@ class PostTrainingQuantTest(QuantizationTestCase):
 
         # in-place version
         model = SingleLayerLinearModel()
+        model.qconfig = qconfig
         quantize(model, test_only_eval_fn, self.calib_data, inplace=True)
         checkQuantized(model)
 
@@ -268,13 +273,14 @@ class PostTrainingQuantTest(QuantizationTestCase):
         model = quantize(QuantStubModel(), test_only_eval_fn, self.calib_data)
         checkQuantized(model)
 
-    def test_resnet_base(self):
+    @given(qconfig=st.sampled_from((torch.quantization.default_qconfig, torch.quantization.default_per_channel_qconfig)))
+    def test_resnet_base(self, qconfig):
         r"""Test quantization for bottleneck topology used in resnet/resnext
         and add coverage for conversion of average pool and float functional
         """
         model = ResNetBase().float().eval()
         model = QuantWrapper(model)
-        model.qconfig = default_qconfig
+        model.qconfig = qconfig
         fuse_list = [['module.conv1', 'module.bn1', 'module.relu1']]
         fuse_modules(model, fuse_list)
         model = prepare(model)
