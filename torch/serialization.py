@@ -150,9 +150,9 @@ def location_tag(storage):
                        torch.typename(storage))
 
 
-def default_restore_location(obj, location):
+def default_restore_location(storage, location):
     for _, _, fn in _package_registry:
-        result = fn(obj, location)
+        result = fn(storage, location)
         if result is not None:
             return result
     raise RuntimeError("don't know how to restore data location of " +

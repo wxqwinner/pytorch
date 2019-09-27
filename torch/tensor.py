@@ -20,24 +20,6 @@ from numbers import Number
 # torch/__init__.py.in to add a type annotation for your method;
 # otherwise, it will not show up in autocomplete.
 
-# Note [Serialize XLA tensors]
-# For tensors don't have storages like XLA, we serialize tensor.cpu().tolist()
-# instead and move it to XLA after tensor is constructed from list and resized
-# to the right shape.
-#
-# There're two known issues in the current approach:
-# - View-relationship is not preserved in XLA tensor serialization.
-#   E.g. B = A[0],
-#        C = A[0:2]
-#        torch.save([B, C], ‘temp’)
-#        loadB, loadC = torch.load(‘temp’)
-#   In CPU/CUDA case `loadB` and `loadC` still shares storage, which means
-#   `loadB` changes as `loadC`.
-#   In XLA case `loadB` and `loadC` are separate.
-# - torch.load(cpu.pt, map_location=torch.device('xla')) is not supported
-#   This limitation comes from CPU/CUDA tensors are restored to dst device
-#   at **storage** level that XLA doesn't have.
-
 class Tensor(torch._C._TensorBase):
     def __deepcopy__(self, memo):
         if not self.is_leaf:
@@ -60,7 +42,6 @@ class Tensor(torch._C._TensorBase):
         check_serializing_named_tensor(self)
         # See Note [Don't serialize hooks]
         torch.utils.hooks.warn_if_has_hooks(self)
-        # See Note [Serialize XLA tensors]
         if self.device.type == 'xla':
             args = (self.cpu().tolist(),
                     self.dtype,
