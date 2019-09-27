@@ -62,7 +62,12 @@ class Tensor(torch._C._TensorBase):
         torch.utils.hooks.warn_if_has_hooks(self)
         # See Note [Serialize XLA tensors]
         if self.device.type == 'xla':
-            return (torch._utils._rebuild_xla_tensor, (self,))
+            args = (self.cpu().tolist(),
+                    self.dtype,
+                    tuple(self.size()),
+                    str(self.device),
+                    self.requires_grad)
+            return (torch._utils._rebuild_xla_tensor, args)
         if self.is_quantized:
             args = (self.storage(),
                     self.storage_offset(),

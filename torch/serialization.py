@@ -151,16 +151,6 @@ def location_tag(storage):
 
 
 def default_restore_location(obj, location):
-    # In XLA case, passed in obj is a XLA Tensor.
-    # While in CPU/CUDA cases, obj is storage.
-    # Currently we don't support loading CPU/CUDA storage directly to XLA device,
-    # See Note [Serialize XLA tensors]
-    if location.startswith('xla'):
-        if torch.is_storage(obj):
-            raise RuntimeError(
-                "Loading storage directly to XLA device is not supported. "
-                "Please load the tensor to cpu first and then move to XLA device using .to()")
-        return obj.to(location)
     for _, _, fn in _package_registry:
         result = fn(obj, location)
         if result is not None:
@@ -322,10 +312,6 @@ def _save(obj, f, pickle_module, pickle_protocol):
                     location,
                     obj.size(),
                     view_metadata)
-        # See Note [Serialize XLA tensors]
-        elif isinstance(obj, torch.Tensor) and obj.device.type == 'xla':
-            values = obj.cpu().tolist()
-            return ('XLATensor', values, obj.dtype, obj.shape, obj.device)
         return None
 
     sys_info = dict(
@@ -592,10 +578,6 @@ def _load(f, map_location, pickle_module, **pickle_load_args):
                 return deserialized_objects[view_key]
             else:
                 return storage
-        # See Note [Serialize XLA tensors]
-        elif typename == 'XLATensor':
-            values, dtype, shape, device = data
-            return restore_location(torch.tensor(values, dtype=dtype, device='cpu').reshape(shape), str(device))
         else:
             raise RuntimeError("Unknown saved id type: %s" % saved_id[0])
 
