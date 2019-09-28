@@ -107,8 +107,9 @@ class _ObserverBase(Observer):
                 min_vals[i] <= max_vals[i]
             ), "min {} should be less than max {}".format(min_vals[i], max_vals[i])
 
-        scales = torch.ones(min_vals.size())
-        zero_points = torch.ones(min_vals.size())
+        scales = torch.empty(min_vals.size(), dtype=torch.float32)
+        zero_points = torch.empty(min_vals.size(), dtype=torch.int64)
+
         for i in range(len(scales)):
             qparam = self._calculate_qparams(
                 min_vals[i], max_vals[i]
