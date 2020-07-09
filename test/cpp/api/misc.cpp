@@ -1,9 +1,6 @@
 #include <gtest/gtest.h>
 
-#include <torch/nn/init.h>
-#include <torch/nn/modules/linear.h>
-#include <torch/types.h>
-#include <torch/utils.h>
+#include <torch/torch.h>
 
 #include <test/cpp/api/support.h>
 
@@ -25,26 +22,27 @@ void torch_warn() {
 
 TEST(UtilsTest, WarnOnce) {
   {
-    std::stringstream buffer;
-    CerrRedirect cerr_redirect(buffer.rdbuf());
+    WarningCapture warnings;
 
     torch_warn_once_A();
     torch_warn_once_A();
     torch_warn_once_B();
     torch_warn_once_B();
 
-    ASSERT_EQ(count_substr_occurrences(buffer.str(), "warn once"), 1);
-    ASSERT_EQ(count_substr_occurrences(buffer.str(), "warn something else once"), 1);
+    ASSERT_EQ(count_substr_occurrences(warnings.str(), "warn once"), 1);
+    ASSERT_EQ(
+        count_substr_occurrences(warnings.str(), "warn something else once"),
+        1);
   }
   {
-    std::stringstream buffer;
-    CerrRedirect cerr_redirect(buffer.rdbuf());
+    WarningCapture warnings;
 
     torch_warn();
     torch_warn();
     torch_warn();
 
-    ASSERT_EQ(count_substr_occurrences(buffer.str(), "warn multiple times"), 3);
+    ASSERT_EQ(
+        count_substr_occurrences(warnings.str(), "warn multiple times"), 3);
   }
 }
 
@@ -83,4 +81,21 @@ TEST_F(AutogradTest, CanTakeDerivativesOfZeroDimTensors) {
 TEST_F(AutogradTest, CanPassCustomGradientInputs) {
   z.sum().backward(torch::ones({}) * 2);
   ASSERT_TRUE(x.grad().allclose(y * 2));
+}
+
+TEST(DeterministicTest, CanSetDeterministic) {
+  auto context = &at::globalContext();
+  for (bool deterministic : {true, false}) {
+    context->setDeterministic(deterministic);
+    ASSERT_TRUE(context->deterministic() == deterministic);
+  }
+}
+
+TEST(DeterministicTest, CanAlertNotDeterministic) {
+  auto context = &at::globalContext();
+  context->setDeterministic(true);
+  ASSERT_ANY_THROW(context->alertNotDeterministic("test"));
+  context->setDeterministic(false);
+  // Should not throw error if deterministic setting is turned off
+  context->alertNotDeterministic("test");
 }

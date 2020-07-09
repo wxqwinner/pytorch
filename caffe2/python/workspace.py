@@ -25,6 +25,7 @@ import caffe2.python._import_c_extension as C
 logger = logging.getLogger(__name__)
 
 Blobs = C.blobs
+ResetBlob = C.reset_blob
 CreateBlob = C.create_blob
 CurrentWorkspace = C.current_workspace
 DeserializeBlob = C.deserialize_blob
@@ -67,6 +68,7 @@ else:
 if has_hip_support:
     GpuDeviceType = caffe2_pb2.HIP
     NumGpuDevices = C.num_hip_devices
+    GetHIPVersion = C.get_hip_version
 
     def GetGpuPeerAccessPattern():
         return np.asarray(C.get_hip_peer_access_pattern())
@@ -393,7 +395,7 @@ Int8Tensor = collections.namedtuple(
 
 def FetchInt8Blob(name):
     """Fetches an Int8 blob from the workspace. It shared backend implementation
-    with FetchBlob but it is recommened when fetching Int8 Blobs
+    with FetchBlob but it is recommended when fetching Int8 Blobs
 
     Inputs:
       name: the name of the Int8 blob - a string or a BlobReference
@@ -428,7 +430,7 @@ def FetchInt8BlobRealVal(name):
 
 def _Workspace_fetch_int8_blob(ws, name):
     """Fetches an Int8 blob from the workspace. It shared backend implementation
-    with FetchBlob but it is recommened when fetching Int8 Blobs
+    with FetchBlob but it is recommended when fetching Int8 Blobs
 
     Inputs:
       name: the name of the Int8 blob - a string or a BlobReference

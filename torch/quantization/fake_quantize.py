@@ -1,10 +1,10 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 import torch
 from torch.nn import Module
-from .observer import MinMaxObserver, _with_args
+from .observer import MovingAverageMinMaxObserver, HistogramObserver, MovingAveragePerChannelMinMaxObserver, _with_args
 
 class FakeQuantize(Module):
-    ''' Simulate the quantize and dequantize operations in training time.
+    r""" Simulate the quantize and dequantize operations in training time.
     The output of this module is given by
 
     x_out = (clamp(round(x/scale + zero_point), quant_min, quant_max)-zero_point)*scale
@@ -25,13 +25,13 @@ class FakeQuantize(Module):
     * :attr:`observer_enable` controls statistics collection on tensors
 
     * :attr:`dtype` specifies the quantized dtype that is being emulated with fake-quantization,
-     allowable values are torch.qint8 and torch.quint8. The values of quant_min and quant_max should
-     be chosen to be consistent with the dtype
+                    allowable values are torch.qint8 and torch.quint8. The values of quant_min and
+                    quant_max should be chosen to be consistent with the dtype
 
 
     Args:
-        observer (module): Module for observing statistics on input tensors and calculating
-        scale and zero-point.
+        observer (module): Module for observing statistics on input tensors and calculating scale
+                           and zero-point.
         quant_min (int): The minimum allowable quantized value.
         quant_max (int): The maximum allowable quantized value.
         observer_kwargs (optional): Arguments for the observer module
@@ -41,50 +41,74 @@ class FakeQuantize(Module):
                            provides a method to calculate scale and zero-point.
 
     """
-    Args:
-        `observer`: Observer module that records stats of input tensor
-        `quant_min`: Tensors are fake-quantized corresponding to the
-        `quant_max`: A function that calculates quantization parameters
-        given the stats
-        `observer_kwargs`
-    '''
-    def __init__(self, observer=MinMaxObserver, quant_min=0, quant_max=255, **observer_kwargs):
+    def __init__(self, observer=MovingAverageMinMaxObserver, quant_min=0, quant_max=255, **observer_kwargs):
         super(FakeQuantize, self).__init__()
         assert quant_min <= quant_max, \
             'quant_min must be less than or equal to quant_max'
         self.quant_min = quant_min
         self.quant_max = quant_max
-        self.fake_quant_enabled = True
-        self.observer_enabled = True
-        self.observer = observer(**observer_kwargs)
-        assert torch.iinfo(self.observer.dtype).min <= quant_min, 'quant_min out of bound'
-        assert quant_max <= torch.iinfo(self.observer.dtype).max, 'quant_max out of bound'
-        self.scale = None
-        self.zero_point = None
-        self.dtype = self.observer.dtype
-        self.qscheme = self.observer.qscheme
+        # fake_quant_enabled and observer_enabled are buffers to support their
+        # replication in DDP. Data type is uint8 because NCCL does not support
+        # bool tensors.
+        self.register_buffer('fake_quant_enabled', torch.tensor([1], dtype=torch.uint8))
+        self.register_buffer('observer_enabled', torch.tensor([1], dtype=torch.uint8))
+        self.activation_post_process = observer(**observer_kwargs)
+        assert torch.iinfo(self.activation_post_process.dtype).min <= quant_min, 'quant_min out of bound'
+        assert quant_max <= torch.iinfo(self.activation_post_process.dtype).max, 'quant_max out of bound'
+        self.register_buffer('scale', torch.tensor([1.0]))
+        self.register_buffer('zero_point', torch.tensor([0]))
+        self.dtype = self.activation_post_process.dtype
+        self.qscheme = self.activation_post_process.qscheme
+        self.ch_axis = self.activation_post_process.ch_axis \
+            if hasattr(self.activation_post_process, 'ch_axis') else -1
 
+    @torch.jit.export
     def enable_fake_quant(self, enabled=True):
-        self.fake_quant_enabled = enabled
+        # type: (bool) -> FakeQuantize
+        self.fake_quant_enabled[0] = 1 if enabled else 0
         return self
 
+    @torch.jit.export
     def disable_fake_quant(self):
         return self.enable_fake_quant(False)
 
+    @torch.jit.export
+    def enable_observer(self, enabled=True):
+        # type: (bool) -> FakeQuantize
+        self.observer_enabled[0] = 1 if enabled else 0
+        return self
+
+    @torch.jit.export
+    def disable_observer(self):
+        return self.enable_observer(False)
+
+    @torch.jit.export
     def calculate_qparams(self):
-        return self.observer.calculate_qparams()
+        return self.activation_post_process.calculate_qparams()
 
     def forward(self, X):
-        if self.observer_enabled:
-            self.observer(X)
-            scale, zero_point = self.calculate_qparams()
-            self.scale, self.zero_point = float(scale), int(zero_point)
-        if self.fake_quant_enabled:
-            X = torch.fake_quantize_per_tensor_affine(X, self.scale, self.zero_point, self.quant_min, self.quant_max)
+        if self.observer_enabled[0] == 1:
+            self.activation_post_process(X.detach())
+            _scale, _zero_point = self.calculate_qparams()
+            _scale, _zero_point = _scale.to(self.scale.device), _zero_point.to(self.zero_point.device)
+            self.scale.resize_(_scale.shape)
+            self.scale.copy_(_scale)
+            self.zero_point.resize_(_zero_point.shape)
+            self.zero_point.copy_(_zero_point)
+
+        if self.fake_quant_enabled[0] == 1:
+            if self.qscheme == torch.per_channel_symmetric or self.qscheme == torch.per_channel_affine:
+                X = torch.fake_quantize_per_channel_affine(X, self.scale, self.zero_point,
+                                                           self.ch_axis, self.quant_min, self.quant_max)
+            else:
+                X = torch.fake_quantize_per_tensor_affine(X, float(self.scale),
+                                                          int(self.zero_point), self.quant_min,
+                                                          self.quant_max)
         return X
 
     with_args = classmethod(_with_args)
 
+    @torch.jit.export
     def extra_repr(self):
         return 'fake_quant_enabled={}, observer_enabled={},\
             scale={}, zero_point={}'.format(
@@ -100,17 +124,37 @@ class FakeQuantize(Module):
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
-
-        self.scale = state_dict.pop(prefix + 'scale')
-        self.zero_point = state_dict.pop(prefix + 'zero_point')
-        super(FakeQuantize, self)._load_from_state_dict(state_dict, prefix, local_metadata, False,
+        # Removing this function throws an error that the the size of the loaded tensor does not match the original size
+        # i.e., These buffers start out with numel 0 and become numel 1 once they have their first forward pass.
+        local_state = ['scale', 'zero_point']
+        for name in local_state:
+            key = prefix + name
+            if key in state_dict:
+                val = state_dict[key]
+                setattr(self, name, val)
+            elif strict:
+                missing_keys.append(key)
+        super(FakeQuantize, self)._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                                         missing_keys, unexpected_keys, error_msgs)
 
-default_fake_quant = FakeQuantize.with_args(observer=MinMaxObserver, quant_min=0, quant_max=255,
+default_fake_quant = FakeQuantize.with_args(observer=MovingAverageMinMaxObserver, quant_min=0, quant_max=255,
                                             dtype=torch.quint8, qscheme=torch.per_tensor_affine, reduce_range=True)
-default_weight_fake_quant = FakeQuantize.with_args(observer=MinMaxObserver, quant_min=-128, quant_max=127,
+default_weight_fake_quant = FakeQuantize.with_args(observer=MovingAverageMinMaxObserver, quant_min=-128, quant_max=127,
                                                    dtype=torch.qint8, qscheme=torch.per_tensor_symmetric, reduce_range=False)
 
+default_per_channel_weight_fake_quant = FakeQuantize.with_args(observer=MovingAveragePerChannelMinMaxObserver,
+                                                               quant_min=-128,
+                                                               quant_max=127,
+                                                               dtype=torch.qint8,
+                                                               qscheme=torch.per_channel_symmetric,
+                                                               reduce_range=False,
+                                                               ch_axis=0)
+default_histogram_fake_quant = FakeQuantize.with_args(observer=HistogramObserver,
+                                                      quant_min=0,
+                                                      quant_max=255,
+                                                      dtype=torch.quint8,
+                                                      qscheme=torch.per_tensor_affine,
+                                                      reduce_range=True)
 def disable_fake_quant(mod):
     if type(mod) == FakeQuantize:
         mod.disable_fake_quant()
@@ -125,4 +169,4 @@ def disable_observer(mod):
 
 def enable_observer(mod):
     if type(mod) == FakeQuantize:
-        mod.disable_observer()
+        mod.enable_observer()
